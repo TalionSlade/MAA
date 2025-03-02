@@ -1,11 +1,7 @@
-const express = require('express');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Salesforce Connected App credentials
 const CLIENT_ID = '3MVG9WVXk15qiz1JB2qh2TNaYkexLOxuBu.JlZB8L9NYNJJdyZ7kUJLibukywGoaNK_qO1uc7CUxptlZfwxjD';
@@ -34,6 +30,7 @@ async function getAccessToken() {
         assertion: jwtToken
       }
     });
+    console.log('Access Token Response:', response.data.accessToken);
     return response.data.access_token;
   } catch (error) {
     console.error('Error getting access token:', error.response.data);
@@ -53,17 +50,13 @@ async function fetchUsers(accessToken, instanceUrl) {
   }
 }
 
-app.get('/data', async (req, res) => {
+(async () => {
   try {
     const accessToken = await getAccessToken();
     console.log('Access Token:', accessToken);
     await fetchUsers(accessToken, 'https://wise-hawk-hdi2dp-dev-ed.trailblaze.my.salesforce.com');
-    res.send('Data fetched successfully');
+    console.log('Data fetched successfully');
   } catch (error) {
-    res.status(500).send('Error fetching data from Salesforce');
+    console.error('Error fetching data from Salesforce');
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+})();
