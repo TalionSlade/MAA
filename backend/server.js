@@ -8,35 +8,31 @@ const session = require('express-session');
 const app = express();
 app.use(express.json());
 
-// Update CORS configuration to allow your frontend origin and credentials
 app.use(cors({
-  origin: 'http://localhost:4173', // Match your frontend's origin (port 4173)
-  credentials: true, // Allow cookies, authorization headers, etc.
+  origin: 'http://localhost:4173',
+  credentials: true,
 }));
 
 app.use(session({
-  secret: process.env.SESSION_SECRET, // Use the environment variable
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // Set to true if using HTTPS
-    maxAge: 3600000 // 1 hour (adjust as needed)
+    secure: false,
+    maxAge: 3600000
   }
 }));
 
-// Constants
 const STATIC_USERNAME = process.env.STATIC_USERNAME || 'Jack Rogers';
 const STATIC_PASSWORD = process.env.STATIC_PASSWORD || 'password123';
 const SALESFORCE_ACCESS_TOKEN = process.env.SALESFORCE_ACCESS_TOKEN;
 const SALESFORCE_INSTANCE_URL = process.env.SALESFORCE_INSTANCE_URL;
 const PORT = process.env.PORT || 3000;
 
-// Initialize OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Utility Functions
 const getSalesforceConnection = () => {
   console.log('Attempting to establish Salesforce connection');
   if (!SALESFORCE_ACCESS_TOKEN || !SALESFORCE_INSTANCE_URL) {
@@ -51,7 +47,6 @@ const getSalesforceConnection = () => {
   return conn;
 };
 
-// Helper Functions
 function extractJSON(str) {
   console.log('Extracting JSON from string:', str);
   const codeBlockRegex = /```(?:json)?\s*({[\s\S]*?})\s*```/;
@@ -108,12 +103,11 @@ function convertTo24HourTime(timeStr) {
     return null;
   }
 
-  // Check if timeStr is already in ISO 8601 format (HH:MM:SS within YYYY-MM-DDTHH:MM:SS.000Z)
   const isoRegex = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})\.\d{3}Z$/;
   const isoMatch = timeStr.match(isoRegex);
   if (isoMatch) {
     console.log('Time is already in ISO 8601 format, returning:', isoMatch[1]);
-    return isoMatch[1]; // Return just HH:MM:SS
+    return isoMatch[1];
   }
 
   const trimmedTimeStr = timeStr.trim();
@@ -152,14 +146,12 @@ function combineDateTime(dateStr, timeStr) {
     return null;
   }
 
-  // Check if timeStr is already in ISO 8601 format (YYYY-MM-DDTHH:MM:SS.000Z)
   const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
   if (isoRegex.test(timeStr)) {
     console.log('Time is already in ISO 8601 format, returning:', timeStr);
     return timeStr;
   }
 
-  // Validate date format (YYYY-MM-DD)
   const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
   if (!dateRegex.test(dateStr)) {
     console.log('Invalid date format, expected YYYY-MM-DD:', dateStr);
@@ -172,13 +164,11 @@ function combineDateTime(dateStr, timeStr) {
     return null;
   }
 
-  // Combine and ensure milliseconds and UTC 'Z' are included
   const result = `${dateStr}T${time24}.000Z`;
   console.log('Combined DateTime:', result);
   return result;
 }
 
-// Middleware
 const authenticate = (req, res, next) => {
   console.log('Authenticating request, session user:', req.session.user);
   if (!req.session.user || req.session.user.username !== STATIC_USERNAME) {
@@ -201,7 +191,6 @@ const optionalAuthenticate = (req, res, next) => {
   next();
 };
 
-// Routes
 app.post('/api/auth/login', (req, res) => {
   console.log('Login request received:', req.body);
   const { username, password } = req.body;
@@ -264,7 +253,6 @@ app.get('/api/salesforce/appointments', authenticate, async (req, res) => {
     console.log('Executing Salesforce query:', query);
     const result = await conn.query(query);
     console.log('Salesforce data retrieved:', JSON.stringify(result.records, null, 2));
-    console.log('Sending response to client:', JSON.stringify(result.records, null, 2));
     res.json(result.records);
   } catch (error) {
     console.error('Error fetching appointments:', error.message);
@@ -284,7 +272,6 @@ app.post('/api/salesforce/appointments', authenticate, async (req, res) => {
     const result = await conn.sobject('Appointment__c').create(appointmentData);
     if (result.success) {
       console.log('Appointment created successfully with ID:', result.id);
-      console.log('Sending response to client:', JSON.stringify({ message: 'Appointment created', id: result.id }, null, 2));
       res.json({ message: 'Appointment created', id: result.id });
     } else {
       console.error('Failed to create appointment:', result);
@@ -318,6 +305,25 @@ app.post('/api/chat', optionalAuthenticate, async (req, res) => {
         }
       ];
       console.log('Initialized chat history:', JSON.stringify(req.session.chatHistory, null, 2));
+    }
+
+    // Predefined response for "Find me a branch within 5 miles with 24hrs Drive-thru ATM service" as a future capability
+    const branchQuery = "Find me a branch within 5 miles with 24hrs Drive-thru ATM service";
+    if (query.toLowerCase().includes(branchQuery.toLowerCase())) {
+      console.log('Detected predefined branch query');
+      const predefinedResponse = {
+        response: "I found a branch that meets your criteria. It's located at 123 Main St, Brooklyn, NY 11201. If you would like to Naviage there here is the link: https://goo.gl/maps/12345",
+        appointmentDetails: null, // No appointment details needed
+        missingFields: []
+      };
+      req.session.chatHistory.push({ role: 'user', content: query });
+      req.session.chatHistory.push({ role: 'assistant', content: JSON.stringify(predefinedResponse) });
+      console.log('Updated chat history with predefined response:', JSON.stringify(req.session.chatHistory, null, 2));
+      req.session.save((err) => {
+        if (err) console.error('Error saving session:', err);
+        else console.log('Session saved successfully');
+      });
+      return res.json(predefinedResponse);
     }
 
     let conn;
@@ -391,9 +397,6 @@ Rules:
 - Use prior appointments to infer preferences for Regular customers.
 - Respond in natural language under "response" and provide structured data under "appointmentDetails".
 - Return JSON like: {"response": "Here's a suggestion...", "appointmentDetails": {...}}
-
-Example:
-{"response": "How about next Tuesday at 10:00 AM at Brooklyn with your preferred banker?", "appointmentDetails": {"Reason_for_Visit__c": "The reason customer mentions", "Appointment_Time__c": " "2025-02-04T06:15:00.000+0000", "Location__c": "Brooklyn", "Banker__c": "005dM000000XyZaQAK"}}
 `;
     console.log('Generated prompt for OpenAI:', prompt);
 
@@ -450,7 +453,7 @@ Example:
     
       const fullAppointmentData = {
         Reason_for_Visit__c: appointmentDetails.Reason_for_Visit__c,
-        Appointment_Time__c: dateTime, // Ensure this is included
+        Appointment_Time__c: dateTime,
         Location__c: appointmentDetails.Location__c,
         Contact__c: '003dM000005H5A7QAK',
         ...(appointmentDetails.Banker__c && appointmentDetails.Banker__c.match(/^005/) && { Banker__c: appointmentDetails.Banker__c }),
@@ -461,7 +464,7 @@ Example:
       if (createResult.success) {
         appointmentId = createResult.id;
         appointmentDetails.Id = appointmentId;
-        appointmentDetails.Appointment_Time__c = dateTime; // Update the appointmentDetails with the formatted datetime
+        appointmentDetails.Appointment_Time__c = dateTime;
         console.log('Appointment created in Salesforce with ID:', appointmentId);
       } else {
         console.error('Failed to create appointment in Salesforce:', createResult);
