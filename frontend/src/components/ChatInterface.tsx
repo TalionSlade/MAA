@@ -15,6 +15,7 @@ interface ChatInterfaceProps {
   userName: string;
   userType: 'guest' | 'customer' | null;
   token?: string | null;
+  isGuidedMode: boolean; // Add isGuidedMode prop
 }
 
 interface Message {
@@ -54,7 +55,7 @@ const PLACEHOLDER_SUGGESTIONS = [
   "For Example .... Check my upcoming bookings",
 ];
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, userType, token }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, userType, token , isGuidedMode }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -519,17 +520,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         ))}
         {renderAppointmentStatus()}
         <div ref={messagesEndRef} />
+        {isGuidedMode && (
         <div className="suggested-prompts">
-        {formattedOptions.map((option, index) => (
-          <button
-            key={index}
-            className="prompt-bubble"
-            onClick={() => handleSend(option)}
-          >
-            {option}
-          </button>
-        ))}
-      </div>
+          {formattedOptions.map((option, index) => (
+            <button
+              key={index}
+              className="prompt-bubble"
+              onClick={() => handleSend(option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>)}
       </div>
 
       <div className="p-4 border-t bg-gray-50">

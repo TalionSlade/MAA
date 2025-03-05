@@ -197,6 +197,7 @@ const AppointmentFlow = () => {
                 userName={userName}
                 userType={userType}
                 token={null} // Add token if needed from login response
+                isGuidedMode={isGuidedMode} // Pass isGuidedMode to ChatInterface
               />
             </motion.div>
           )}

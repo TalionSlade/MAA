@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 
 app.use(cors({
-  origin: [/^http:\/\/localhost:\d+$/],
+  origin: 'http://localhost:5173',
   credentials: true,
 }));
 
@@ -515,6 +515,39 @@ app.get('/api/chat/state', optionalAuthenticate, (req, res) => {
   };
   console.log('Sending chat state to client:', JSON.stringify(responseData, null, 2));
   res.json(responseData);
+});
+
+app.post('/api/extract-options', async (req, res) => {
+  const { response } = req.body;
+
+  if (!response) {
+    return res.status(400).json({ message: 'Missing response' });
+  }
+
+  try {
+    const openaiResponse = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'If the text is about various available appointment dates, return only the top three dates in YYYY-MM-DD format. ' + 
+          'If the text is about various available appointment reasons, return only the top three reasons as texts seperated by comma.'+
+          'If the text is about various available appointment times, return only the top three times in HH:MM AM/PM format. ' +
+          'If the text is about various available appointment locations, return only the top three locations as texts seperated by comma.' +
+          'If the text is about existing appointments with details, return the top three appointment details as texts seperated by comma.' +
+          `If there is no relevant information, return NotFound.` },
+        { role: 'user', content: response },
+      ],
+      max_tokens: 100,
+      temperature: 0.5,
+    });
+
+    const llmOutput = openaiResponse.choices[0].message.content.trim();
+    const options = llmOutput.split('\n').slice(0, 3); // Extract the top three options
+
+    res.json({ options });
+  } catch (error) {
+    console.error('Error extracting options:', error.message);
+    res.status(500).json({ message: 'Error extracting options', error: error.message });
+  }
 });
 
 app.listen(PORT, () => {
