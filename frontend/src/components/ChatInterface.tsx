@@ -59,6 +59,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [formattedOptions, setFormattedOptions] = useState<string[]>([]);
   const [appointmentStatus, setAppointmentStatus] = useState<{
     details: AppointmentDetails | null;
     missingFields: string[];
@@ -356,10 +357,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
 
       const { processedResponse, options } = await processResponse(response);
       console.log('Processed response:', processedResponse);
-      console.log('Extracted options:', options);
-      const formattedOptions = options.length > 0 ? options[0].split(',').map(opt => opt.trim()) : [];
-      console.log('Formatted options:', formattedOptions);
-      
+      console.log('Options:', options);
+      if (options[0].includes('NotFound')) {
+        
+        setFormattedOptions([]);
+      } else {
+        const formattedOptions = options.length > 0 ? options[0].split(',').map(opt => opt.trim()) : [];
+        console.log('Formatted options:', formattedOptions);
+        setFormattedOptions(formattedOptions);
+      }      
 
       setMessages(prev => prev.filter(msg => !msg.isLoading));
       setMessages(prev => [...prev, { type: 'assistant', text: response }]);
@@ -513,6 +519,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         ))}
         {renderAppointmentStatus()}
         <div ref={messagesEndRef} />
+        <div className="suggested-prompts">
+        {formattedOptions.map((option, index) => (
+          <button
+            key={index}
+            className="prompt-bubble"
+            onClick={() => handleSend(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
       </div>
 
       <div className="p-4 border-t bg-gray-50">
