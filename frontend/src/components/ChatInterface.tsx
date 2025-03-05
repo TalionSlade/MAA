@@ -355,7 +355,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
       }
       
       const { response, appointmentDetails, missingFields } = await chatWithAssistant(text);
-
+      console.log('Original response:', response);
       const { processedResponse, options } = await processResponse(response);
       console.log('Processed response:', processedResponse);
       console.log('Options:', options);

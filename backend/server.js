@@ -397,6 +397,7 @@ Rules:
 - Use prior appointments to infer preferences for Regular customers.
 - Respond in natural language under "response" and provide structured data under "appointmentDetails".
 - Return JSON like: {"response": "Here's a suggestion...", "appointmentDetails": {...}}
+- When returning options for available dates and slots, return atleast three options
 `;
     console.log('Generated prompt for OpenAI:', prompt);
 
@@ -528,12 +529,21 @@ app.post('/api/extract-options', async (req, res) => {
     const openaiResponse = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'If the text is about various available appointment dates, return only the top three dates in YYYY-MM-DD format. ' + 
-          'If the text is about various available appointment reasons, return only the top three reasons as texts seperated by comma.'+
-          'If the text is about various available appointment times, return only the top three times in HH:MM AM/PM format. ' +
-          'If the text is about various available appointment locations, return only the top three locations as texts seperated by comma.' +
-          'If the text is about existing appointments with details, return the top three appointment details as texts seperated by comma.' +
-          `If there is no relevant information, return NotFound.` },
+        { role: 'system', content: `You are a context-based information extraction bot. The various fields you need to deal with are appointment dates, slots, locations, and appointment reasons. The slots field can be a mixture of date and timeslot.
+          
+          If the text is about various available appointment dates or times, return only the top three dates along with the timeslots.
+          If the text is about various available appointment reasons, return only the top three reasons as texts separated by commas.
+          If the text is about various available appointment locations, return only the top three locations as texts separated by commas.
+          If there is no relevant information, return "NotFound".
+          Important Instruction: Always add one more option that states "Suggest some other option".
+          Important Instruction: Always convert the date options to relative day as in today tomorrow coming tuesday etc etc.
+          Important Instruction: If the text prompt is that of a confirmation, add a "Alright" option .
+
+          Examples:          
+          1. Input: "You can choose from the following reasons for your appointment: general inquiry, credit card renewal, or loan application."
+             Output: "general inquiry, credit card renewal, loan application, Other Reasons"
+          2. Input: "Our available locations are Brooklyn, Manhattan, and New York."
+             Output: "Brooklyn, Manhattan, New York, Suggest some other option` },
         { role: 'user', content: response },
       ],
       max_tokens: 100,
