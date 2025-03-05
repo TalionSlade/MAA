@@ -239,6 +239,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
           credentials: 'include',
         });
 
+        console.log('Initial state response:', response);
+
         if (!response.ok) {
           if (response.status === 401) {
             const healthCheck = await checkSessionHealth();
@@ -307,6 +309,32 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+// ///////////////////////////////////////////
+  const processResponse = async (response: string): Promise<{ processedResponse: string, options: string[] }> => {
+  // Call OpenAI API to extract options from the response
+    const openaiResponse = await fetch(`${API_BASE_URL}/extract-options`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+      body: JSON.stringify({ response }),
+    });
+
+    if (!openaiResponse.ok) {
+      throw new Error(`HTTP error! status: ${openaiResponse.status}`);
+    }
+
+    const data = await openaiResponse.json();
+    const options = data.options || [];
+
+    // Add your custom processing logic here
+    const processedResponse = `Assistant: ${response}`;
+
+    return { processedResponse, options };
+  };
+  // ///////////////////////////////////////////
 
   const handleSend = async (text: string = input) => {
     if (!text.trim() || isProcessing) return;
@@ -325,6 +353,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
       }
       
       const { response, appointmentDetails, missingFields } = await chatWithAssistant(text);
+
+      const { processedResponse, options } = await processResponse(response);
+      console.log('Processed response:', processedResponse);
+      console.log('Extracted options:', options);
+      const formattedOptions = options.length > 0 ? options[0].split(',').map(opt => opt.trim()) : [];
+      console.log('Formatted options:', formattedOptions);
+      
 
       setMessages(prev => prev.filter(msg => !msg.isLoading));
       setMessages(prev => [...prev, { type: 'assistant', text: response }]);
