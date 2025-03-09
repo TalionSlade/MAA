@@ -283,6 +283,154 @@ app.post('/api/salesforce/appointments', authenticate, async (req, res) => {
   }
 });
 
+app.post('/api/guidedFlow', async (req, res) => {
+  try {
+    const { query, customerType, guidedStep } = req.body;
+    if (!query || !customerType || !guidedStep) {
+      return res.status(400).json({ message: 'Missing query, customerType, or guidedStep' });
+    }
+
+    if (!req.session) {
+      return res.status(401).json({ message: 'Session expired or invalid', error: 'SESSION_EXPIRED' });
+    }
+
+    // Initialize the guided flow data if not present
+    initGuidedFlowSession(req);
+
+    // We'll store the partial data in session so we can finalize at the "confirmation" step
+    const flowData = req.session.guidedFlow;  // { reason, date, time, location }
+
+    // We'll build a specialized system prompt based on the guidedStep
+    let systemInstructions = '';
+    switch (guidedStep) {
+      case 'reasonSelection':
+        // LLM can propose times based on the reason
+        flowData.reason = query;  // store the reason in session
+        systemInstructions = `
+User selected a reason: ${flowData.reason}.
+Please suggest 3 possible appointment date/time slots. Return them under "timeSlots" array in JSON.
+Include a "response" that politely offers those slots, plus an "alternateDatesOption" if you wish.
+        `;
+        break;
+
+      case 'timeSelection':
+        // The user presumably picks from the LLM-suggested times
+        flowData.time = query;  // store the chosen time in session (could be "10:00 AM" or "2025-03-12 1:00 PM")
+        systemInstructions = `
+User selected the time slot: ${flowData.time}.
+Now we must gather the location. Provide 3 location options in "locationOptions": ["Brooklyn","Manhattan","New York"].
+Return them in a JSON array. Also provide a "response" to ask the user to choose a location.
+        `;
+        break;
+
+      case 'locationSelection':
+        // The user picks a location
+        flowData.location = query;  // store the chosen location in session
+        systemInstructions = `
+User selected location: ${flowData.location}.
+Now we have reason = ${flowData.reason}, time = ${flowData.time}, location = ${flowData.location}.
+Return a "response" summarizing these choices and ask for confirmation. 
+Include something like "Please confirm your appointment."
+        `;
+        break;
+
+      case 'confirmation':
+        // The user confirms the final details. Now we create the appointment in Salesforce.
+        // We can do the LLM or skip the LLM if you want. For demonstration, let's do a short LLM prompt:
+        systemInstructions = `
+The user confirmed the appointment with reason = ${flowData.reason}, time = ${flowData.time}, location = ${flowData.location}.
+Return a short "response" that the appointment is being booked. 
+        `;
+        break;
+
+      default:
+        systemInstructions = 'No recognized guided step.';
+        break;
+    }
+
+    // Add system prompt
+    if (!req.session.chatHistory) {
+      req.session.chatHistory = [];
+    }
+    req.session.chatHistory.push({ role: 'system', content: systemInstructions });
+    req.session.chatHistory.push({ role: 'user', content: query });
+
+    // Call OpenAI with your messages
+    const openaiResponse = await openai.chat.completions.create({
+      model: 'gpt-4o-mini', // or whichever model
+      messages: req.session.chatHistory,
+      max_tokens: 500,
+      temperature: 0.7,
+    });
+
+    const llmOutput = openaiResponse.choices[0].message.content.trim();
+    req.session.chatHistory.push({ role: 'assistant', content: llmOutput });
+    req.session.save(() => {});
+
+    // Attempt to parse the LLM JSON
+    let parsed;
+    try {
+      parsed = JSON.parse(llmOutput);
+    } catch (err) {
+      parsed = JSON.parse(extractJSON(llmOutput));
+    }
+
+    // If we're at confirmation, create the record in Salesforce
+    let appointmentDetails = null;
+    if (guidedStep === 'confirmation') {
+      try {
+        // Convert the chosen date/time to a proper format if needed
+        // We'll do a naive approach here; your code may do a more robust conversion
+        const dateTime = combineDateTime(flowData.time);
+
+        // Create the record in SF
+        const conn = getSalesforceConnection();
+        const newAppointment = {
+          Reason_for_Visit__c: flowData.reason,
+          Appointment_Time__c: dateTime,      // a single datetime field in your object
+          Location__c: flowData.location,
+          Contact__c: '003dM000005H5A7QAK'    // Hard-coded contact or from session
+        };
+        const result = await conn.sobject('Appointment__c').create(newAppointment);
+
+        if (result.success) {
+          appointmentDetails = {
+            Id: result.id,
+            Reason_for_Visit__c: flowData.reason,
+            Appointment_Time__c: dateTime,
+            Location__c: flowData.location
+          };
+        } else {
+          console.error('SF creation failed:', result);
+        }
+
+        // Clear the session data so user can do a new guided flow next time
+        req.session.guidedFlow = { reason: null, date: null, time: null, location: null };
+      } catch (error) {
+        console.error('Error creating appointment in SF:', error);
+      }
+    }
+
+    // Return the LLM's response plus any additional data
+    const responsePayload = {
+      response: parsed.response || '...',
+      appointmentDetails: appointmentDetails || parsed.appointmentDetails || null,
+      timeSlots: parsed.timeSlots || [],           // if LLM returns time slots
+      locationOptions: parsed.locationOptions || [], // if LLM returns location options
+      alternateDatesOption: parsed.alternateDatesOption || null
+    };
+
+    return res.json(responsePayload);
+
+  } catch (error) {
+    console.error('Error in /api/guidedFlow:', error);
+    return res.status(500).json({ message: 'Error in guidedFlow', error: error.message });
+  }
+});
+
+
+
+
 app.post('/api/chat', optionalAuthenticate, async (req, res) => {
   console.log('Received chat request:', JSON.stringify(req.body, null, 2));
   try {
@@ -386,17 +534,21 @@ Extract or suggest:
 - Reason_for_Visit__c (Ask customer if not mentioned, suggest from the previous bookings if available)
 - Appointment_Date__c (YYYY-MM-DD)
 - Appointment_Time__c (HH:MM AM/PM)
-- Location__c ( Brooklyn, Manhattan, or New York)
+- Location__c (Brooklyn, Manhattan, or New York)
 - Banker__c (use the Preferred Banker ID from context if available, otherwise omit it unless specified)
 
 Rules:
-- If details are missing, suggest reasonable defaults (e.g., next business day, 9 AM–5 PM, preferred location/banker ID if available). but do not assume a purpose unless the user specifies it.
-- Reason_for_Visit__c should be inferred from the user's query and dont mention it if not provided ask the user for the reason important
-- Your suggestrions should be in a suggestive language and it shouldnt be explicit, also ask for time or date or reason if not provided done make it by yourself
+- If details are missing, suggest reasonable defaults (e.g., next business day, 9 AM–5 PM, preferred location/banker ID if available), but do not assume a purpose unless the user specifies it.
+- Reason_for_Visit__c should be inferred from the user's query and if not provided, ask the user for the reason.
+- Your suggestions should be in a suggestive language and not overly explicit; also ask for time, date, or reason if not provided.
 - For Banker__c, only include it in appointmentDetails if it's a valid Salesforce ID (e.g., starts with "005" for User records).
 - Use prior appointments to infer preferences for Regular customers.
 - Respond in natural language under "response" and provide structured data under "appointmentDetails".
 - Return JSON like: {"response": "Here's a suggestion...", "appointmentDetails": {...}}
+
+Additional Slot Availability Check:
+- Before finalizing the appointment details, check if the suggested appointment slot (combination of Appointment_Date__c and Appointment_Time__c) is already booked in the previous appointments.
+- If the slot is not available, indicate that the slot is taken and suggest alternative times or ask the user for a different preferred time, rather than proceeding to create a duplicate appointment.
 `;
     console.log('Generated prompt for OpenAI:', prompt);
 
