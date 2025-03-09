@@ -15,6 +15,7 @@ interface ChatInterfaceProps {
   userName: string;
   userType: 'guest' | 'customer' | null;
   token?: string | null;
+  isGuidedMode: boolean; // Add isGuidedMode prop  
 }
 
 interface Message {
@@ -34,6 +35,8 @@ interface AppointmentDetails {
 
 // Example API base (adjust for your environment)
 const API_BASE_URL = 'http://localhost:3000/api';
+// Add a new state variable to track if an appointment was just booked
+const [justBooked, setJustBooked] = useState(false);
 
 // Example prompts for unguided flow
 const CUSTOMER_PROMPTS = [
@@ -97,7 +100,7 @@ function formatAppointmentTime(isoDateTime: string | null): string {
   return formatted;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, userType, token }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, userType, token,isGuidedMode }) => {
   // Chat states
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -350,7 +353,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
   }, [token]);
 
   // Default messages
-  const getDefaultMessages = () => [
+  const getDefaultMessages = (): Message[] => [
     { type: 'assistant', text: "We're here to make booking an appointment with your banker quick, and easy!" },
     { type: 'assistant', text: "You can chat with us or use our guided flow to book your appointment step-by-step." },
   ];
@@ -556,7 +559,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
   // ---- Render final confirmation if we have an appointment ID
   const renderAppointmentStatus = () => {
     const { details } = appointmentStatus;
-    if (!details || !details.Id) return null;
+    if (!details || !details.Id ) return null;
 
     // Log the details for debugging
     console.log('Appointment Details:', details);
@@ -590,12 +593,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     <div className="h-full flex flex-col">
       {/* Toggle guided/unguided */}
       <div className="p-2 flex justify-end">
-        <button
-          onClick={() => setIsGuidedFlow(prev => !prev)}
-          className="px-4 py-2 bg-blue-500 text-white rounded-lg"
-        >
-          {isGuidedFlow ? "Switch to Unguided Flow" : "Switch to Guided Flow"}
-        </button>
       </div>
 
       {sessionError && (
@@ -644,7 +641,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
 
       {/* Footer: either guided steps or normal input */}
       <div className="p-4 border-t bg-gray-50">
-        {isGuidedFlow ? (
+        {isGuidedMode ? (
           <>
             {/* STEP 1: Reason */}
             {guidedStep === 'reason' && (
