@@ -47,6 +47,27 @@ const getSalesforceConnection = () => {
   return conn;
 };
 
+// Helper function to format ISO 8601 date/time into a readable format
+function formatDateTimeForDisplay(isoDateTime) {
+  console.log('Formatting date/time for display:', isoDateTime);
+  if (!isoDateTime) return 'Not specified';
+
+  const date = new Date(isoDateTime);
+  const options = {
+    timeZone: 'UTC',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  };
+  let formatted = date.toLocaleString('en-US', options);
+  formatted = formatted.replace(/(\d+),/, '$1th,');
+  console.log('Formatted date/time:', formatted);
+  return formatted;
+}
+
 function extractJSON(str) {
   console.log('Extracting JSON from string:', str);
   const codeBlockRegex = /```(?:json)?\s*({[\s\S]*?})\s*```/;
@@ -79,6 +100,17 @@ function extractJSON(str) {
   
   console.log('No valid JSON found, returning empty object');
   return '{}';
+}
+
+function initGuidedFlowSession(req) {
+  if (!req.session.guidedFlow) {
+    req.session.guidedFlow = {
+      reason: null,
+      date: null,
+      time: null,
+      location: null
+    };
+  }
 }
 
 function getMostFrequent(arr) {
@@ -167,6 +199,34 @@ function combineDateTime(dateStr, timeStr) {
   const result = `${dateStr}T${time24}.000Z`;
   console.log('Combined DateTime:', result);
   return result;
+}
+
+function parseDateTimeString(dateTimeStr) {
+  console.log('Parsing date/time string:', dateTimeStr);
+  if (!dateTimeStr) return { date: null, time: null };
+
+  // Example format: "October 27, 2023, 09:30 AM"
+  const parts = dateTimeStr.match(/(\w+ \d{1,2}, \d{4}), (\d{1,2}:\d{2} [AP]M)/i);
+  if (!parts) {
+    console.log('Invalid date/time format:', dateTimeStr);
+    return { date: null, time: null };
+  }
+
+  const [, datePart, timePart] = parts;
+
+  // Parse the date part (e.g., "October 27, 2023") into YYYY-MM-DD
+  const dateObj = new Date(datePart);
+  if (isNaN(dateObj.getTime())) {
+    console.log('Invalid date part:', datePart);
+    return { date: null, time: null };
+  }
+
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  return { date: dateStr, time: timePart };
 }
 
 const authenticate = (req, res, next) => {
@@ -308,14 +368,15 @@ app.post('/api/guidedFlow', async (req, res) => {
         flowData.reason = query;  // store the reason in session
         systemInstructions = `
 User selected a reason: ${flowData.reason}.
-Please suggest 3 possible appointment date/time slots. Return them under "timeSlots" array in JSON.
+Please suggest 3 possible appointment date/time slots in ISO 8601 format (e.g., "2025-03-10T16:00:00.000Z").
+Return them under "timeSlots" array in JSON.
 Include a "response" that politely offers those slots, plus an "alternateDatesOption" if you wish.
         `;
         break;
 
       case 'timeSelection':
         // The user presumably picks from the LLM-suggested times
-        flowData.time = query;  // store the chosen time in session (could be "10:00 AM" or "2025-03-12 1:00 PM")
+        flowData.time = query;  // store the chosen time in session (should be in ISO 8601 format)
         systemInstructions = `
 User selected the time slot: ${flowData.time}.
 Now we must gather the location. Provide 3 location options in "locationOptions": ["Brooklyn","Manhattan","New York"].
@@ -336,7 +397,6 @@ Include something like "Please confirm your appointment."
 
       case 'confirmation':
         // The user confirms the final details. Now we create the appointment in Salesforce.
-        // We can do the LLM or skip the LLM if you want. For demonstration, let's do a short LLM prompt:
         systemInstructions = `
 The user confirmed the appointment with reason = ${flowData.reason}, time = ${flowData.time}, location = ${flowData.location}.
 Return a short "response" that the appointment is being booked. 
@@ -357,7 +417,7 @@ Return a short "response" that the appointment is being booked.
 
     // Call OpenAI with your messages
     const openaiResponse = await openai.chat.completions.create({
-      model: 'gpt-4o-mini', // or whichever model
+      model: 'gpt-4o-mini',
       messages: req.session.chatHistory,
       max_tokens: 500,
       temperature: 0.7,
@@ -375,21 +435,33 @@ Return a short "response" that the appointment is being booked.
       parsed = JSON.parse(extractJSON(llmOutput));
     }
 
+    // Format timeSlots for display
+    let formattedTimeSlots = [];
+    if (parsed.timeSlots && Array.isArray(parsed.timeSlots)) {
+      formattedTimeSlots = parsed.timeSlots.map(slot => ({
+        display: formatDateTimeForDisplay(slot),
+        raw: slot
+      }));
+    }
+
     // If we're at confirmation, create the record in Salesforce
     let appointmentDetails = null;
     if (guidedStep === 'confirmation') {
       try {
-        // Convert the chosen date/time to a proper format if needed
-        // We'll do a naive approach here; your code may do a more robust conversion
-        const dateTime = combineDateTime(flowData.time);
+        // Since flowData.time is already in ISO 8601 format (e.g., "2023-10-27T16:00:00.000Z")
+        const dateTime = flowData.time;
+        if (!dateTime) {
+          console.error('Missing date/time in confirmation step');
+          throw new Error('Invalid date/time format');
+        }
 
         // Create the record in SF
         const conn = getSalesforceConnection();
         const newAppointment = {
           Reason_for_Visit__c: flowData.reason,
-          Appointment_Time__c: dateTime,      // a single datetime field in your object
+          Appointment_Time__c: dateTime,
           Location__c: flowData.location,
-          Contact__c: '003dM000005H5A7QAK'    // Hard-coded contact or from session
+          Contact__c: '003dM000005H5A7QAK'
         };
         const result = await conn.sobject('Appointment__c').create(newAppointment);
 
@@ -402,12 +474,14 @@ Return a short "response" that the appointment is being booked.
           };
         } else {
           console.error('SF creation failed:', result);
+          throw new Error('Failed to create appointment in Salesforce');
         }
 
-        // Clear the session data so user can do a new guided flow next time
+        // Clear the session data
         req.session.guidedFlow = { reason: null, date: null, time: null, location: null };
       } catch (error) {
         console.error('Error creating appointment in SF:', error);
+        return res.status(500).json({ message: 'Failed to create appointment', error: error.message });
       }
     }
 
@@ -415,8 +489,8 @@ Return a short "response" that the appointment is being booked.
     const responsePayload = {
       response: parsed.response || '...',
       appointmentDetails: appointmentDetails || parsed.appointmentDetails || null,
-      timeSlots: parsed.timeSlots || [],           // if LLM returns time slots
-      locationOptions: parsed.locationOptions || [], // if LLM returns location options
+      timeSlots: formattedTimeSlots,
+      locationOptions: parsed.locationOptions || [],
       alternateDatesOption: parsed.alternateDatesOption || null
     };
 
@@ -427,9 +501,6 @@ Return a short "response" that the appointment is being booked.
     return res.status(500).json({ message: 'Error in guidedFlow', error: error.message });
   }
 });
-
-
-
 
 app.post('/api/chat', optionalAuthenticate, async (req, res) => {
   console.log('Received chat request:', JSON.stringify(req.body, null, 2));
@@ -461,7 +532,7 @@ app.post('/api/chat', optionalAuthenticate, async (req, res) => {
       console.log('Detected predefined branch query');
       const predefinedResponse = {
         response: "I found a branch that meets your criteria. It's located at 123 Main St, Brooklyn, NY 11201. If you would like to Naviage there here is the link: https://goo.gl/maps/12345",
-        appointmentDetails: null, // No appointment details needed
+        appointmentDetails: null,
         missingFields: []
       };
       req.session.chatHistory.push({ role: 'user', content: query });

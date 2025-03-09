@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, MessageSquare, Calendar, AlertCircle, CheckCircle, Mic } from 'lucide-react';
+import { Send, MessageSquare, AlertCircle, CheckCircle, Mic } from 'lucide-react';
 import clsx from 'clsx';
 
-// Add SpeechRecognition support
+// SpeechRecognition support
 declare global {
   interface Window {
     SpeechRecognition: typeof SpeechRecognition;
@@ -32,20 +32,22 @@ interface AppointmentDetails {
   Id?: string;
 }
 
+// Example API base (adjust for your environment)
 const API_BASE_URL = 'http://localhost:3000/api';
 
+// Example prompts for unguided flow
 const CUSTOMER_PROMPTS = [
   "I need an appointment with my preferred banker and branch",
   "Reschedule my upcoming appointment to next Tuesday at 2pm",
   "Find me a branch within 5 miles with 24hrs Drive-thru ATM service"
 ];
-
 const GUEST_PROMPTS = [
   "I'm new and want to open an account",
   "I need help with a loan application",
   "Can I schedule an appointment for tomorrow?"
 ];
 
+// Typewriter placeholder suggestions
 const PLACEHOLDER_SUGGESTIONS = [
   "For Example .... Book an appointment for next Monday 2pm at Manhattan for a loan consultation",
   "For Example .... Find me the nearest branch with 24hrs Check Deposit with drive-thru service",
@@ -53,47 +55,91 @@ const PLACEHOLDER_SUGGESTIONS = [
   "For Example .... Check my upcoming bookings",
 ];
 
-const guidedReasons = [
+// Guided flow reason choices
+const GUIDED_REASONS = [
   "Open a new account",
   "Apply for a credit card",
   "Manage spending and saving",
   "Build credit and reduce debt",
   "Death of a loved one",
   "Questions or assistance with Wells Fargo products and services",
-  "Save for retirement"
+  "Save for retirement",
 ];
 
+// Possible guided steps
+type GuidedStep = 'reason' | 'date' | 'location' | 'confirmation' | 'completed';
+
+/**
+ * Helper function to format an ISO 8601 date/time string
+ * (e.g. "2025-03-09T10:00:00.000Z") into a more readable format
+ * (e.g. "March 9, 2025, 10:00 AM").
+ */
+function formatAppointmentTime(isoDateTime: string | null): string {
+  if (!isoDateTime) return '(Not specified)';
+
+  // Convert to a Date object
+  const date = new Date(isoDateTime);
+
+  // Example: show "March 9, 2025, 10:00 AM" in UTC or local
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: 'UTC',  // or remove if you want local timezone
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  };
+  let formatted = date.toLocaleString('en-US', options);
+  // Optionally add "th" after the day (quick hack)
+  // E.g. "March 9, 2025" => "March 9th, 2025"
+  formatted = formatted.replace(/(\d+),/, '$1th,');
+  return formatted;
+}
+
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, userType, token }) => {
-  // Chat and appointment states
+  // Chat states
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [sessionError, setSessionError] = useState<boolean>(false);
+
+  // Appointment status for final display
   const [appointmentStatus, setAppointmentStatus] = useState<{
     details: AppointmentDetails | null;
     missingFields: string[];
   }>({ details: null, missingFields: [] });
-  const [sessionError, setSessionError] = useState<boolean>(false);
 
-  // Guided flow related states
+  // Toggle between guided and unguided flow
   const [isGuidedFlow, setIsGuidedFlow] = useState(false);
-  // guidedStep can be 'reason', 'date', or 'confirmation'
-  const [guidedStep, setGuidedStep] = useState<'reason' | 'date' | 'confirmation'>('reason');
-  const [selectedReason, setSelectedReason] = useState<string>('');
-  const [llmDateSuggestions, setLLMDateSuggestions] = useState<string[]>([]);
-  const [selectedDateTime, setSelectedDateTime] = useState<string>('');
 
+  // Guided flow states
+  const [guidedStep, setGuidedStep] = useState<GuidedStep>('reason');
+  const [selectedReason, setSelectedReason] = useState('');
+  // Store both the readable format and the raw ISO format for date/time
+  const [llmDateSuggestions, setLLMDateSuggestions] = useState<{ display: string; raw: string }[]>([]);
+  const [selectedDateTime, setSelectedDateTime] = useState<{ display: string; raw: string }>({ display: '', raw: '' });
+  const [llmLocationOptions, setLLMLocationOptions] = useState<string[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState('');
+
+  // For auto-scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Speech recognition references
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const retryCount = useRef(0);
   const MAX_RETRIES = 2;
 
+  // Typewriter placeholder
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const [currentPlaceholder, setCurrentPlaceholder] = useState('');
   const [charIndex, setCharIndex] = useState(0);
 
+  // Different default prompts for customers vs. guests
   const prompts = userType === 'customer' ? CUSTOMER_PROMPTS : GUEST_PROMPTS;
 
+  // ---- Session check
   const checkSessionHealth = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/session-health`, {
@@ -106,13 +152,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     }
   };
 
-  // Regular chat API call
+  // ---- Unguided chat function
   const chatWithAssistant = async (query: string) => {
     const response = await fetch(`${API_BASE_URL}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       credentials: 'include',
       body: JSON.stringify({
@@ -136,7 +182,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     };
   };
 
-  // Speech recognition setup
+  // ---- On initial mount, set default messages
+  useEffect(() => {
+    setMessages(getDefaultMessages());
+  }, []);
+
+  // ---- Speech recognition
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -163,7 +214,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         if (event.error === 'network' || event.error === 'service-not-allowed') {
           if (retryCount.current < MAX_RETRIES) {
             retryCount.current += 1;
-            setMessages(prev => [...prev, { type: 'assistant', text: `Connection issue detected. Retrying (${retryCount.current}/${MAX_RETRIES})...` }]);
+            setMessages(prev => [...prev, {
+              type: 'assistant',
+              text: `Connection issue detected. Retrying (${retryCount.current}/${MAX_RETRIES})...`
+            }]);
             setTimeout(() => {
               if (recognitionRef.current) {
                 recognitionRef.current.continuous = false;
@@ -173,16 +227,25 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
             }, 1000 * retryCount.current);
           } else {
             setIsRecording(false);
-            setMessages(prev => [...prev, { type: 'assistant', text: 'Speech recognition is currently unavailable. Please type your message.' }]);
+            setMessages(prev => [...prev, {
+              type: 'assistant',
+              text: 'Speech recognition is currently unavailable. Please type your message.'
+            }]);
             retryCount.current = 0;
           }
         } else if (event.error === 'no-speech') {
-          setMessages(prev => [...prev, { type: 'assistant', text: 'I didn’t hear anything. Please try again or type your message.' }]);
+          setMessages(prev => [...prev, {
+            type: 'assistant',
+            text: 'I didn’t hear anything. Please try again or type your message.'
+          }]);
           setIsRecording(false);
         } else if (event.error === 'aborted') {
           setIsRecording(false);
         } else {
-          setMessages(prev => [...prev, { type: 'assistant', text: `Speech recognition error: ${event.error}. Please try typing instead.` }]);
+          setMessages(prev => [...prev, {
+            type: 'assistant',
+            text: `Speech recognition error: ${event.error}. Please try typing instead.`
+          }]);
           setIsRecording(false);
         }
       };
@@ -200,7 +263,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     }
   }, []);
 
-  // Typewriter-style placeholder suggestions
+  // ---- Typewriter placeholders
   useEffect(() => {
     if (input || isProcessing || sessionError || isRecording) return;
     const typeInterval = setInterval(() => {
@@ -213,20 +276,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         setTimeout(() => {
           setCharIndex(0);
           setCurrentPlaceholder('');
-          setPlaceholderIndex((prev) => (prev + 1) % PLACEHOLDER_SUGGESTIONS.length);
+          setPlaceholderIndex(prev => (prev + 1) % PLACEHOLDER_SUGGESTIONS.length);
         }, 2000);
       }
     }, 100);
     return () => clearInterval(typeInterval);
   }, [charIndex, placeholderIndex, input, isProcessing, sessionError, isRecording]);
 
-  // Load initial chat state from backend
+  // ---- Load chat state from the server
   useEffect(() => {
     const fetchInitialState = async () => {
       try {
         console.log('Fetching initial chat state...');
         const response = await fetch(`${API_BASE_URL}/chat/state`, {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
           credentials: 'include',
         });
         if (!response.ok) {
@@ -244,12 +307,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         }
         const { messages: initialMessages, appointmentDetails } = await response.json();
         console.log('Received initial state:', { initialMessages, appointmentDetails });
+
         if (initialMessages && initialMessages.length > 0) {
           const parsedMessages = initialMessages
             .filter((msg: any) => msg.role !== 'system')
             .map((msg: any) => ({
-              text: msg.role === 'user' 
-                ? msg.content 
+              text: msg.role === 'user'
+                ? msg.content
                 : (() => {
                     try {
                       const parsed = JSON.parse(msg.content);
@@ -285,6 +349,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     });
   }, [token]);
 
+  // Default messages
   const getDefaultMessages = () => [
     { type: 'assistant', text: "We're here to make booking an appointment with your banker quick, and easy!" },
     { type: 'assistant', text: "You can chat with us or use our guided flow to book your appointment step-by-step." },
@@ -294,13 +359,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Regular free-form send handler for unguided mode
+  // ---- Unguided free-form message send
   const handleSend = async (text: string = input) => {
     if (!text.trim() || isProcessing) return;
     setIsProcessing(true);
     setMessages(prev => [...prev, { type: 'user', text }]);
     setInput('');
     setMessages(prev => [...prev, { type: 'assistant', text: 'Working...', isLoading: true }]);
+
     try {
       if (sessionError) {
         const isHealthy = await checkSessionHealth();
@@ -316,7 +382,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
       setMessages(prev => prev.filter(msg => !msg.isLoading));
       if (String(error).includes('Session')) {
         setSessionError(true);
-        setMessages(prev => [...prev, { type: 'assistant', text: 'I lost our conversation history. Please try again or refresh the page.' }]);
+        setMessages(prev => [...prev, {
+          type: 'assistant',
+          text: 'I lost our conversation history. Please try again or refresh the page.'
+        }]);
       } else {
         setMessages(prev => [...prev, { type: 'assistant', text: 'Sorry, something went wrong. Please try again!' }]);
       }
@@ -325,98 +394,141 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
     }
   };
 
+  // ---- Guided flow calls
+  const callGuidedFlow = async (userQuery: string, step: GuidedStep) => {
+    const response = await fetch(`${API_BASE_URL}/guidedFlow`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        query: userQuery,
+        customerType: userType === 'customer' ? 'Regular' : 'Guest',
+        guidedStep: step,
+      }),
+    });
+    return response.json();
+  };
+
+  // Step 1: Reason
   const handleReasonSelection = async (reason: string) => {
     setSelectedReason(reason);
     setMessages(prev => [...prev, { type: 'user', text: reason }]);
     setIsProcessing(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/guidedFlow`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          query: reason,
-          customerType: userType === 'customer' ? 'Regular' : 'Guest',
-          guidedStep: 'dateSelection'
-        }),
-      });
-      const data = await response.json();
-  
-      // Look for 'timeSlots' instead of 'dateSuggestions'
+      const data = await callGuidedFlow(reason, 'reasonSelection');
       if (data.timeSlots && Array.isArray(data.timeSlots)) {
         setLLMDateSuggestions(data.timeSlots);
       }
-  
-      // If there's an alternateDatesOption or something else:
-      // if (data.alternateDatesOption) { ... }
-  
       setMessages(prev => [
-        ...prev,
-        { type: 'assistant', text: data.response || "Here are some suggested appointment slots:" }
+        ...prev.filter(msg => !msg.isLoading),
+        { type: 'assistant', text: data.response || "Here are some suggested appointment slots..." }
       ]);
       setGuidedStep('date');
     } catch (error) {
       console.error('Error in guided flow (reason):', error);
-      setMessages(prev => [
-        ...prev,
-        { type: 'assistant', text: 'Error retrieving date suggestions. Please try again.' }
-      ]);
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Error retrieving date suggestions. Please try again.'
+      }]);
     } finally {
       setIsProcessing(false);
     }
   };
-  
 
-  // Guided flow: handle date/time selection
-  const handleDateSelection = (dateSlot: string) => {
-    setSelectedDateTime(dateSlot);
-    setMessages(prev => [...prev, { type: 'user', text: dateSlot }]);
-    setGuidedStep('confirmation');
-  };
-
-  // Guided flow: final confirmation step – send confirmation to backend
-  const handleConfirmAppointment = async () => {
+  // Step 2: Date/time
+  const handleTimeSelection = async (slot: { display: string; raw: string }) => {
+    setSelectedDateTime(slot);
+    setMessages(prev => [...prev, { type: 'user', text: slot.display }]);
     setIsProcessing(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/guidedFlow`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          query: `Confirm appointment with reason: ${selectedReason} and slot: ${selectedDateTime}`,
-          customerType: userType === 'customer' ? 'Regular' : 'Guest',
-          guidedStep: 'confirmation'
-        }),
-      });
-      const data = await response.json();
-      setMessages(prev => [...prev, { type: 'assistant', text: data.response || "Your appointment has been confirmed." }]);
-      if (data.appointmentDetails) {
-        setAppointmentStatus({ details: data.appointmentDetails, missingFields: data.missingFields || [] });
+      const data = await callGuidedFlow(slot.raw, 'timeSelection');
+      if (data.locationOptions && Array.isArray(data.locationOptions)) {
+        setLLMLocationOptions(data.locationOptions);
       }
-      // Reset guided flow states after confirmation
-      setGuidedStep('reason');
-      setSelectedReason('');
-      setSelectedDateTime('');
-      setLLMDateSuggestions([]);
+      setMessages(prev => [
+        ...prev.filter(msg => !msg.isLoading),
+        { type: 'assistant', text: data.response || "Please choose a location." }
+      ]);
+      setGuidedStep('location');
     } catch (error) {
-      console.error('Error confirming appointment:', error);
-      setMessages(prev => [...prev, { type: 'assistant', text: 'Error confirming appointment. Please try again.' }]);
+      console.error('Error selecting time:', error);
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Could not fetch location options. Please try again.'
+      }]);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const checkInternetConnection = () => {
-    return navigator.onLine;
+  // Step 3: Location
+  const handleLocationSelection = async (loc: string) => {
+    setSelectedLocation(loc);
+    setMessages(prev => [...prev, { type: 'user', text: loc }]);
+    setIsProcessing(true);
+    try {
+      const data = await callGuidedFlow(loc, 'locationSelection');
+      setMessages(prev => [
+        ...prev.filter(msg => !msg.isLoading),
+        { type: 'assistant', text: data.response || "Confirm your appointment details?" }
+      ]);
+      setGuidedStep('confirmation');
+    } catch (error) {
+      console.error('Error selecting location:', error);
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Could not finalize location step. Please try again.'
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
+  // Step 4: Confirmation (creates record in Salesforce)
+  const handleConfirmAppointment = async () => {
+    setMessages(prev => [...prev, { type: 'user', text: 'Confirm appointment' }]);
+    setIsProcessing(true);
+    try {
+      const data = await callGuidedFlow('Confirm appointment', 'confirmation');
+      setMessages(prev => [
+        ...prev.filter(msg => !msg.isLoading),
+        { type: 'assistant', text: data.response || "Your appointment has been booked." }
+      ]);
+      if (data.appointmentDetails?.Id) {
+        setAppointmentStatus({ details: data.appointmentDetails, missingFields: [] });
+      }
+      setGuidedStep('completed');
+      // Reset guided flow states
+      setSelectedReason('');
+      setSelectedDateTime({ display: '', raw: '' });
+      setSelectedLocation('');
+      setLLMDateSuggestions([]);
+      setLLMLocationOptions([]);
+    } catch (error) {
+      console.error('Error confirming appointment:', error);
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Could not confirm appointment. Please try again.'
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // ---- Microphone
   const handleMicClick = () => {
     if (!recognitionRef.current) {
-      setMessages(prev => [...prev, { type: 'assistant', text: 'Speech recognition is not supported in your browser.' }]);
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Speech recognition is not supported in your browser.'
+      }]);
       return;
     }
-    if (!checkInternetConnection()) {
-      setMessages(prev => [...prev, { type: 'assistant', text: 'Your device appears to be offline. Speech recognition requires an internet connection.' }]);
+    if (!navigator.onLine) {
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        text: 'Your device appears to be offline. Speech recognition requires an internet connection.'
+      }]);
       return;
     }
     if (isRecording) {
@@ -433,30 +545,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
       } catch (e) {
         console.error('Error starting recognition:', e);
         setIsRecording(false);
-        setMessages(prev => [...prev, { type: 'assistant', text: 'Could not start speech recognition. Please try again.' }]);
+        setMessages(prev => [...prev, {
+          type: 'assistant',
+          text: 'Could not start speech recognition. Please try again.'
+        }]);
       }
     }
   };
 
-  const formatAppointmentTime = (isoDateTime: string | null) => {
-    if (!isoDateTime) return '(Not specified)';
-    const date = new Date(isoDateTime);
-    const options = {
-      timeZone: 'UTC',
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    };
-    const formatted = date.toLocaleString('en-US', options);
-    return formatted.replace(/(\d+),/, '$1th,');
-  };
-
+  // ---- Render final confirmation if we have an appointment ID
   const renderAppointmentStatus = () => {
     const { details } = appointmentStatus;
     if (!details || !details.Id) return null;
+
+    // Log the details for debugging
+    console.log('Appointment Details:', details);
+
     return (
       <div className="p-4 mx-4 my-2 bg-white rounded-lg border shadow-sm">
         <div className="flex items-center gap-2 mb-2">
@@ -468,7 +572,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
             <div className="text-gray-500">Purpose:</div>
             <div>{details.Reason_for_Visit__c || '(Not specified)'}</div>
             <div className="text-gray-500">Date & Time:</div>
-            <div>{formatAppointmentTime(details.Appointment_Time__c)}</div>
+            <div>{formatAppointmentTime(details.Appointment_Time__c) || '(Not specified)'}</div>
             <div className="text-gray-500">Location:</div>
             <div>{details.Location__c || '(Not specified)'}</div>
           </div>
@@ -484,7 +588,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
 
   return (
     <div className="h-full flex flex-col">
-      {/* Toggle to switch between Guided and Unguided flow */}
+      {/* Toggle guided/unguided */}
       <div className="p-2 flex justify-end">
         <button
           onClick={() => setIsGuidedFlow(prev => !prev)}
@@ -502,8 +606,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
             </div>
             <div className="ml-3">
               <p className="text-sm text-amber-700">
-                There seems to be an issue with your session. 
-                <button 
+                There seems to be an issue with your session.
+                <button
                   onClick={() => checkSessionHealth().then(healthy => {
                     setSessionError(!healthy);
                     if (healthy) setMessages(getDefaultMessages());
@@ -518,34 +622,40 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
         </div>
       )}
 
+      {/* Chat messages */}
       <div className="flex-1 p-4 overflow-y-auto">
         {messages.map((message, index) => (
           <div
             key={index}
             className={clsx(
               'mb-4 p-3 rounded-lg max-w-[85%]',
-              message.type === 'user' ? 'ml-auto bg-[#CD1309] text-white' : 'mr-auto bg-gray-100 text-gray-800',
+              message.type === 'user'
+                ? 'ml-auto bg-[#CD1309] text-white'
+                : 'mr-auto bg-gray-100 text-gray-800',
               message.isLoading && 'animate-pulse'
             )}
           >
             {message.text}
           </div>
         ))}
-        {renderAppointmentStatus()}
+        {guidedStep !== 'completed' && renderAppointmentStatus()}
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Footer: either guided steps or normal input */}
       <div className="p-4 border-t bg-gray-50">
         {isGuidedFlow ? (
           <>
+            {/* STEP 1: Reason */}
             {guidedStep === 'reason' && (
               <div className="mb-4">
                 <p className="mb-2 font-medium">Please select a reason for your appointment:</p>
                 <div className="flex flex-wrap gap-2">
-                  {guidedReasons.map(option => (
-                    <button 
-                      key={option} 
+                  {GUIDED_REASONS.map(option => (
+                    <button
+                      key={option}
                       onClick={() => handleReasonSelection(option)}
+                      disabled={isProcessing}
                       className="px-4 py-2 bg-[#CD1309] text-white rounded-lg"
                     >
                       {option}
@@ -554,48 +664,80 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
                 </div>
               </div>
             )}
+
+            {/* STEP 2: Date/time */}
             {guidedStep === 'date' && (
               <div className="mb-4">
-                <p className="mb-2 font-medium">Based on your reason, here are some suggested appointment slots:</p>
-                <div className="flex flex-wrap gap-2">
-                  {llmDateSuggestions.length > 0 ? (
-                    llmDateSuggestions.map(slot => (
-                      <button 
-                        key={slot} 
-                        onClick={() => handleDateSelection(slot)}
+                <p className="mb-2 font-medium">Here are some suggested appointment slots:</p>
+                {llmDateSuggestions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {llmDateSuggestions.map(slot => (
+                      <button
+                        key={slot.raw}
+                        onClick={() => handleTimeSelection(slot)}
+                        disabled={isProcessing}
                         className="px-4 py-2 bg-[#CD1309] text-white rounded-lg"
                       >
-                        {slot}
+                        {slot.display}
                       </button>
-                    ))
-                  ) : (
-                    <p>Loading suggestions...</p>
-                  )}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-500">Loading suggestions...</p>
+                )}
               </div>
             )}
+
+            {/* STEP 3: Location */}
+            {guidedStep === 'location' && (
+              <div className="mb-4">
+                <p className="mb-2 font-medium">Please select a location for your appointment:</p>
+                {llmLocationOptions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {llmLocationOptions.map(loc => (
+                      <button
+                        key={loc}
+                        onClick={() => handleLocationSelection(loc)}
+                        disabled={isProcessing}
+                        className="px-4 py-2 bg-[#CD1309] text-white rounded-lg"
+                      >
+                        {loc}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-500">Loading location options...</p>
+                )}
+              </div>
+            )}
+
+            {/* STEP 4: Confirmation */}
             {guidedStep === 'confirmation' && (
               <div className="mb-4">
-                <p className="mb-2 font-medium">Please confirm your appointment details:</p>
-                <div className="p-4 border rounded-lg bg-gray-100">
+                <p className="mb-2 font-medium">Review your details before confirming:</p>
+                <div className="p-4 border rounded-lg bg-gray-100 text-sm space-y-1">
                   <p><strong>Reason:</strong> {selectedReason}</p>
-                  <p><strong>Date/Time:</strong> {selectedDateTime}</p>
+                  <p><strong>Date/Time:</strong> {selectedDateTime.display}</p>
+                  <p><strong>Location:</strong> {selectedLocation}</p>
                 </div>
                 <div className="flex gap-2 mt-4">
-                  <button 
-                    onClick={handleConfirmAppointment} 
-                    className="px-4 py-2 bg-green-500 text-white rounded-lg"
+                  <button
+                    onClick={handleConfirmAppointment}
+                    disabled={isProcessing}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg"
                   >
                     Confirm Appointment
                   </button>
-                  <button 
-                    onClick={() => { 
-                      // Reset guided flow to start over if canceled
-                      setGuidedStep('reason'); 
-                      setSelectedReason(''); 
-                      setSelectedDateTime(''); 
-                      setLLMDateSuggestions([]); 
-                    }} 
+                  <button
+                    onClick={() => {
+                      setGuidedStep('reason');
+                      setSelectedReason('');
+                      setSelectedDateTime({ display: '', raw: '' });
+                      setSelectedLocation('');
+                      setLLMDateSuggestions([]);
+                      setLLMLocationOptions([]);
+                    }}
+                    disabled={isProcessing}
                     className="px-4 py-2 bg-red-500 text-white rounded-lg"
                   >
                     Cancel
@@ -603,7 +745,25 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
                 </div>
               </div>
             )}
-            {/* Always show free text input as a fallback */}
+
+            {/* STEP 5: Completed */}
+            {guidedStep === 'completed' && (
+              <div className="mb-4">
+                {/* Show the detailed confirmation window */}
+                {renderAppointmentStatus()}
+                <button
+                  onClick={() => {
+                    setGuidedStep('reason');
+                    setAppointmentStatus({ details: null, missingFields: [] });
+                  }}
+                  className="mt-4 px-4 py-2 bg-[#CD1309] text-white rounded-lg"
+                >
+                  Book Another Appointment
+                </button>
+              </div>
+            )}
+
+            {/* Always show free text input as fallback in guided mode */}
             <div className="flex space-x-2 mt-4">
               <input
                 type="text"
@@ -635,6 +795,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
             </div>
           </>
         ) : (
+          // Unguided flow
           <>
             <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-2">
               {prompts.map((prompt, index) => (
@@ -685,7 +846,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ isLoggedIn, userName, use
   );
 };
 
-// CSS for pulse animation
+// Optional CSS for pulse animation
 const styles = `
   @keyframes pulse {
     0% { transform: scale(1); opacity: 1; }
