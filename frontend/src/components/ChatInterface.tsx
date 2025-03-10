@@ -35,8 +35,6 @@ interface AppointmentDetails {
 
 // Example API base (adjust for your environment)
 const API_BASE_URL = 'http://localhost:3000/api';
-// Add a new state variable to track if an appointment was just booked
-const [justBooked, setJustBooked] = useState(false);
 
 // Example prompts for unguided flow
 const CUSTOMER_PROMPTS = [
